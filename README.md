@@ -1,1 +1,1 @@
-# diffusion-drafter
+# R2D2: Recursive Discrete Diffusion Language Model
