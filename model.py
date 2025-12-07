@@ -101,7 +101,7 @@ class AbsorbingDiffusion:
     def q_sample(self, x_0, t):
         """Forward: randomly mask tokens based on timestep"""
         B, T = x_0.shape
-        mask_prob = t.float() / self.num_timesteps
+        mask_prob = 0.2 + 0.6 * (t.float() / self.num_timesteps)
         mask = torch.rand(B, T, device=x_0.device) < mask_prob[:, None]
 
         x_t = x_0.clone()
@@ -130,8 +130,7 @@ class AbsorbingDiffusion:
 
             current_x = torch.where(is_masked, new_tokens, x_t)
 
-        # Gradually unmask
-        unmask_prob = 1.0 - (t.float() / self.num_timesteps)
+        unmask_prob = 0.8 - 0.6 * (t.float() / self.num_timesteps)
         unmask = torch.rand(B, T, device=x_t.device) < unmask_prob[:, None]
         unmask = unmask & is_masked
 

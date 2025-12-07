@@ -14,15 +14,15 @@ MODEL_CONFIG = {
 
 # Diffusion hyperparameters
 DIFFUSION_CONFIG = {
-    'num_timesteps': 100
+    'num_timesteps': 50  # Reduced from 100 to minimize error accumulation during sampling
 }
 
 # Training hyperparameters
 TRAINING_CONFIG = {
     'batch_size': 64,  # Reduced for more complex data
     'num_epochs': 10,
-    'learning_rate': 5e-5,
-    'recursion_depth': 3,
+    'learning_rate': 1e-4,  # Increased from 5e-5 for faster learning
+    'recursion_depth': 6,  # Increased from 3 for better iterative refinement
     'gradient_clip': 1.0
 }
 
@@ -36,6 +36,6 @@ DATASET_CONFIG = {
 # Sampling hyperparameters
 SAMPLING_CONFIG = {
     'max_length': 128,  # Match training length
-    'recursion_depth': 10,
-    'temperature': 0.9
+    'recursion_depth': 8,  # Reduced from 10, more aligned with training depth
+    'temperature': 1.0  # Slightly increased for more diversity
 }
