@@ -3,14 +3,20 @@ import torch.nn.functional as F
 from tqdm.auto import tqdm
 
 
-def train_epoch(model, diffusion, dataloader, optimizer, device, recursion_depth=8, log_interval=100):
+def train_epoch(model, diffusion, dataloader, optimizer, device, recursion_depth=8, log_interval=100, scheduler=None, gradient_clip=None):
     model.train()
     total_loss = 0
     step_losses = []
+    total_tokens = 0
+    grad_norms = []
 
     for step, x_0 in enumerate(tqdm(dataloader, desc="Training")):
         x_0 = x_0.to(device)
-        B = x_0.size(0)
+        B, T = x_0.shape
+
+        # Count tokens in this batch
+        batch_tokens = B * T
+        total_tokens += batch_tokens
 
         # Random timesteps
         t = torch.randint(0, diffusion.num_timesteps, (B,), device=device)
@@ -32,13 +38,23 @@ def train_epoch(model, diffusion, dataloader, optimizer, device, recursion_depth
 
         optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+        # Clip gradients if specified
+        if gradient_clip is not None:
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
+            grad_norms.append(grad_norm.item())
+
         optimizer.step()
+
+        # Step learning rate scheduler
+        if scheduler is not None:
+            scheduler.step()
 
         total_loss += loss.item()
         step_losses.append(loss.item())
 
-    return total_loss / len(dataloader), step_losses
+    avg_grad_norm = sum(grad_norms) / len(grad_norms) if grad_norms else 0.0
+    return total_loss / len(dataloader), step_losses, total_tokens, avg_grad_norm
 
 
 def validate(model, diffusion, dataloader, device, recursion_depth=8):
