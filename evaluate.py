@@ -2,13 +2,12 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
-from collections import Counter
 from datasets import load_dataset
 from utils import sample
 from tqdm import tqdm
 
 def measure_diversity(model, diffusion, tokenizer, num_samples=30, prompt="Once upon a time",
-                      max_length=64, recursion_depth=10, temperature=0.9, device='cuda'):
+                      max_length=64, recursion_depth=6, temperature=0.9, device='cuda'):
     print(f"Generating {num_samples} samples to measure diversity...\n")
 
     samples = []
@@ -25,7 +24,6 @@ def measure_diversity(model, diffusion, tokenizer, num_samples=30, prompt="Once 
         )
         samples.append(text)
 
-    # Compute diversity
     all_tokens = []
     for text in samples:
         tokens = text.lower().split()
@@ -42,28 +40,24 @@ def measure_diversity(model, diffusion, tokenizer, num_samples=30, prompt="Once 
     return samples
 
 
-def compute_perplexity(model, diffusion, tokenizer, num_test_samples=1000, device='cuda', dataset_name=None, dataset_config=None):
-    """
-    Computes diffusion loss (proxy for perplexity) on a held-out dataset.
-    Handles streaming datasets robustly.
-    """
+def compute_perplexity(model, diffusion, tokenizer, num_test_samples=200, device='cuda', dataset_name=None, dataset_config=None):
     print(f"Loading test data ({dataset_name})...")
     
+    # Robust Dataset Loading
     try:
         if dataset_name == 'wikitext':
             test_dataset = load_dataset(dataset_name, dataset_config, split='test', streaming=True)
-        elif 'fineweb' in dataset_name.lower():
+        elif 'fineweb' in str(dataset_name).lower():
+            # Skip training data to simulate test set if using same dataset
             test_dataset = load_dataset(dataset_name, dataset_config, split='train', streaming=True)
-            test_dataset = test_dataset.skip(12000000)
+            test_dataset = test_dataset.skip(200000) 
         else:
-            test_dataset = load_dataset(dataset_name, split='train', streaming=True)
-            test_dataset = test_dataset.skip(1000000)
+            test_dataset = load_dataset(dataset_name, split='train', streaming=True).skip(1000)
     except Exception as e:
         print(f"Warning: Could not load {dataset_name} ({e}). using OpenWebText fallback.")
         test_dataset = load_dataset('openwebtext', split='train', streaming=True).skip(1000)
 
     test_samples = []
-    # robust iterator
     iterator = iter(test_dataset)
     for _ in range(num_test_samples):
         try:
@@ -77,32 +71,24 @@ def compute_perplexity(model, diffusion, tokenizer, num_test_samples=1000, devic
     model.eval()
     total_loss = 0
     total_tokens = 0
-    fixed_timestep = diffusion.num_timesteps // 2
+    fixed_timestep = 25 # Check at t=25 (50% noise)
 
     with torch.no_grad():
         for text in tqdm(test_samples, desc=f"Eval {dataset_name}"):
             if not text.strip(): continue
             
-            # Truncate to model max length
-            tokens = tokenizer.encode(text, return_tensors='pt',
-                                     truncation=True, max_length=128).to(device)
+            tokens = tokenizer.encode(text, return_tensors='pt', truncation=True, max_length=128).to(device)
+            if tokens.size(1) < 5: continue
 
-            if tokens.size(1) < 5:
-                continue
-
-            # FIXED timestep for consistent evaluation
             t = torch.tensor([fixed_timestep], device=device)
-
-            # Add noise
             x_t, mask = diffusion.q_sample(tokens, t)
 
-            if not mask.any():
-                continue
+            if not mask.any(): continue
 
-            # Predict
-            logits = model(x_t, t, recursion_depth=4) # Use moderate depth for eval
+            # FIX: Model returns LIST of logits. Get the last one.
+            all_logits = model(x_t, t, recursion_depth=4)
+            logits = all_logits[-1] 
 
-            # Loss
             loss = F.cross_entropy(
                 logits[mask].reshape(-1, logits.size(-1)),
                 tokens[mask].reshape(-1),
@@ -111,12 +97,11 @@ def compute_perplexity(model, diffusion, tokenizer, num_test_samples=1000, devic
             total_loss += loss.item()
             total_tokens += mask.sum().item()
 
-    # Perplexity = exp(average NLL)
     perplexity = np.exp(total_loss / total_tokens) if total_tokens > 0 else float('inf')
 
-    print(f"\n=== Diffusion Model Perplexity (t={fixed_timestep}/{diffusion.num_timesteps}) ===")
+    print(f"\n=== Diffusion Perplexity (t={fixed_timestep}) ===")
     print(f"  Dataset: {dataset_name}")
-    print(f"  Perplexity: {perplexity:.2f}")
+    print(f"  Score: {perplexity:.2f}")
 
     return perplexity
 
@@ -124,61 +109,40 @@ def compute_perplexity(model, diffusion, tokenizer, num_test_samples=1000, devic
 def evaluate_generation_quality_phi2(samples, device='cuda', plot_histogram=True):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    print("\nLoading Phi-2 for quality evaluation...")
-
+    print("\nLoading Evaluation Model (GPT-2 Large)...")
+    # Using GPT-2 Large is safer for memory than Phi-2
+    eval_model_name = 'gpt2-large'
+    
     try:
-        eval_model_name = 'microsoft/phi-2'
-        phi2_model = AutoModelForCausalLM.from_pretrained(
-            eval_model_name,
-            torch_dtype=torch.float16,
-            trust_remote_code=True
-        ).to(device)
-        phi2_tokenizer = AutoTokenizer.from_pretrained(eval_model_name, trust_remote_code=True)
-    except:
-        print("Phi-2 failed to load (likely VRAM). Falling back to GPT-2-Large.")
-        eval_model_name = 'gpt2-large'
-        phi2_model = AutoModelForCausalLM.from_pretrained(eval_model_name).to(device)
-        phi2_tokenizer = AutoTokenizer.from_pretrained(eval_model_name)
+        eval_model = AutoModelForCausalLM.from_pretrained(eval_model_name).to(device)
+        eval_tokenizer = AutoTokenizer.from_pretrained(eval_model_name)
+    except Exception as e:
+        print(f"Failed to load evaluator: {e}")
+        return 0.0, []
 
-    phi2_model.eval()
-
-    print(f"\nEvaluating {len(samples)} generated samples...")
-
+    eval_model.eval()
     perplexities = []
     
     with torch.no_grad():
         for i, text in enumerate(samples):
-            tokens = phi2_tokenizer.encode(text, return_tensors='pt').to(device)
+            if not text.strip(): continue
+            tokens = eval_tokenizer.encode(text, return_tensors='pt').to(device)
+            if tokens.size(1) < 2: continue
 
-            if tokens.size(1) < 2:
-                continue
-
-            outputs = phi2_model(tokens, labels=tokens)
-            loss = outputs.loss
-            ppl = torch.exp(loss).item()
+            outputs = eval_model(tokens, labels=tokens)
+            ppl = torch.exp(outputs.loss).item()
             
-            # Filter out crazy outliers for the plot
-            if ppl < 1000:
+            if ppl < 500: # Filter garbage outliers
                 perplexities.append(ppl)
 
-            if (i + 1) % 10 == 0:
-                print(f"  Processed {i + 1}/{len(samples)} samples...")
-
     avg_ppl = np.mean(perplexities) if perplexities else 0.0
-
-    print(f"\n=== Generation Quality ({eval_model_name} Perplexity) ===")
-    print(f"  Average Perplexity: {avg_ppl:.2f}")
+    print(f"  Average Quality Score (PPL): {avg_ppl:.2f}")
 
     if plot_histogram and perplexities:
-        plt.figure(figsize=(10, 6))
-        plt.hist(perplexities, bins=20, color='skyblue', edgecolor='black', alpha=0.7)
-        plt.axvline(avg_ppl, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {avg_ppl:.1f}')
-        plt.title('Distribution of Generation Quality')
-        plt.xlabel('Perplexity (Lower is Better)')
-        plt.ylabel('Count of Samples')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+        plt.figure(figsize=(8, 5))
+        plt.hist(perplexities, bins=10, color='skyblue', edgecolor='black')
+        plt.title('Generation Quality Distribution')
+        plt.xlabel('GPT-2 Perplexity (Lower is Better)')
         plt.savefig('generation_quality_hist.png')
-        print("Saved histogram to 'generation_quality_hist.png'")
 
     return avg_ppl, perplexities

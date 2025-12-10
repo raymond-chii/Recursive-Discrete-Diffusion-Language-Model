@@ -15,15 +15,18 @@ def validate(model, diffusion, dataloader, device, recursion_depth=8, max_steps=
             x_0 = x_0.to(device)
             B = x_0.size(0)
             
-            # Random timestep for diffusion loss
-            t = torch.randint(0, diffusion.num_timesteps, (B,), device=device)
+            # Random timestep for diffusion loss (exclude t=0)
+            t = torch.randint(1, diffusion.num_timesteps + 1, (B,), device=device)
             
             # Forward diffusion (add noise)
             x_t, mask = diffusion.q_sample(x_0, t)
             
             # Predict (denoise)
-            logits = model(x_t, t, recursion_depth=recursion_depth)
-            
+            all_logits = model(x_t, t, recursion_depth=recursion_depth)
+
+            # Use the final (most refined) step's logits
+            logits = all_logits[-1]  # Shape: [B, T, Vocab]
+
             # Calculate Loss (only on masked tokens)
             loss = F.cross_entropy(
                 logits[mask].reshape(-1, logits.size(-1)),
