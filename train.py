@@ -10,13 +10,14 @@ from tqdm import tqdm
 import torch.nn.functional as F
 from torch.amp import autocast, GradScaler 
 
-# --- A100 OPTIMIZATIONS ---
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-
 from model import TinyRecursiveTransformer, AbsorbingDiffusion
 from dataset import TextDataset, collate_fn
 from config import device, MODEL_CONFIG, DIFFUSION_CONFIG, TRAINING_CONFIG, DATASET_CONFIG
+
+# --- A100 OPTIMIZATIONS ---
+if TRAINING_CONFIG.get('use_tf32', True):
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
 CHECKPOINT_DIR = "checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
@@ -25,7 +26,7 @@ def validate(model, diffusion, dataloader, tokenizer, device, recursion_depth):
     model.eval()
     easy_loss, hard_loss = 0, 0
     easy_count, hard_count = 0, 0
-    dtype = torch.bfloat16 # Always BF16 on A100
+    dtype = torch.bfloat16 if TRAINING_CONFIG.get('mixed_precision') == 'bf16' else torch.float16
 
     with torch.no_grad():
         for i, x_0 in enumerate(dataloader):
@@ -113,7 +114,18 @@ def main():
         latest = max(checkpoints, key=lambda x: int(x.split('_')[-1].split('.')[0]))
         print(f"Resuming from {latest}")
         ckpt = torch.load(latest, map_location=device)
-        model.load_state_dict(ckpt['model'])
+        
+        state_dict = ckpt['model']
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith('_orig_mod.'):
+                new_state_dict[k[10:]] = v # Remove first 10 chars
+            else:
+                new_state_dict[k] = v
+        
+        model.load_state_dict(new_state_dict)
+        # --------------------------------------
+
         optimizer.load_state_dict(ckpt['opt'])
         start_step = ckpt['global_step']
         print(f"Resumed at step {start_step}")
@@ -128,7 +140,6 @@ def main():
     val_config = DATASET_CONFIG.copy(); val_config['num_samples'] = 2000
     val_dataset = TextDataset(tokenizer=tokenizer, **val_config)
 
-    # High Workers allowed because data is local!
     print("Using 8 Data Workers for max speed.")
     train_dataloader = DataLoader(train_dataset, batch_size=TRAINING_CONFIG['batch_size'], num_workers=8, collate_fn=collate_fn)
     val_dataloader = DataLoader(val_dataset, batch_size=TRAINING_CONFIG['batch_size'], collate_fn=collate_fn)
@@ -136,14 +147,17 @@ def main():
     # 4. Scheduler
     total_steps = (DATASET_CONFIG['num_samples'] // TRAINING_CONFIG['batch_size']) * TRAINING_CONFIG['num_epochs']
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=TRAINING_CONFIG['learning_rate'], total_steps=total_steps, pct_start=0.05)
+    
     if start_step > 0:
         for _ in range(start_step): scheduler.step()
 
     print(f"Starting Training: {TRAINING_CONFIG['num_epochs']} Epochs, {total_steps} Steps.")
 
-    # 5. Loop
+    # 5. Loop & History Logic
     loss_history = {'train_steps': [], 'train_losses': [], 'val_losses': []}
+    
     if os.path.exists('loss_history.json') and start_step > 0:
+        print("Loaded previous training history.")
         with open('loss_history.json', 'r') as f: loss_history = json.load(f)
 
     model.train()

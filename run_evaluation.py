@@ -14,7 +14,7 @@ def main():
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     tokenizer.pad_token = tokenizer.eos_token
     
-    # 1. Find Checkpoint (Fixed Pattern)
+    # 1. Find Checkpoint
     checkpoints = glob.glob(os.path.join('checkpoints', 'ckpt_*.pt'))
     if not checkpoints:
         print("Error: No checkpoints found in 'checkpoints/' folder!")
@@ -25,7 +25,6 @@ def main():
     
     checkpoint = torch.load(model_path, map_location=device)
 
-    # Init Model
     model = TinyRecursiveTransformer(
         vocab_size=len(tokenizer) + 1,
         **MODEL_CONFIG

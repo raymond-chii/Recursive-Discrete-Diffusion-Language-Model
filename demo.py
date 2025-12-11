@@ -7,7 +7,6 @@ from config import device
 
 
 def demo_generation():
-    """Demo script for generating text with various prompts"""
 
     # Load tokenizer
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')

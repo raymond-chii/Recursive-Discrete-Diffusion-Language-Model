@@ -28,13 +28,11 @@ class TextDataset(IterableDataset):
                 ds_slice = ds_stream.take(num_samples)
                 
                 # 3. CONVERT TO STATIC DATASET (The Fix)
-                # We use a generator to pull the data from the stream into a static object
                 print("[DOWNLOAD] Materializing data... (This may take a few minutes)")
                 
                 def gen():
                     yield from ds_slice
 
-                # Use the features from the stream to ensure schema consistency
                 ds_static = HFDataset.from_generator(gen, features=ds_stream.features)
                 
                 # 4. Save to disk
@@ -54,7 +52,6 @@ class TextDataset(IterableDataset):
         # Convert to iterable for training consistency
         self.dataset = self.dataset.to_iterable_dataset()
         
-        # Aggressive shuffling (Fast on local disk)
         self.dataset = self.dataset.shuffle(seed=42, buffer_size=10000)
 
     def __iter__(self):

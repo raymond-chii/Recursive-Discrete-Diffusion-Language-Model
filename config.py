@@ -26,8 +26,8 @@ TRAINING_CONFIG = {
     'warmup_steps': 2000, 
     'recursion_depth': 6,
     'gradient_clip': 1.0,
-    'use_tf32': True,       # Speed boost for Ampere GPUs
-    'mixed_precision': 'bf16' # Critical for stability
+    'use_tf32': True,
+    'mixed_precision': 'bf16'
 }
 
 # Dataset hyperparameters

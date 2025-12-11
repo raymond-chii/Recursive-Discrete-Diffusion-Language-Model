@@ -1,6 +1,3 @@
-"""
-Simple script to count model parameters from config
-"""
 from transformers import GPT2Tokenizer
 from config import MODEL_CONFIG
 
@@ -50,9 +47,6 @@ def count_params(config):
     total += input_proj
 
     # 5. Transformer Blocks (reused n_layers times in recursion)
-    # Each block has: MultiheadAttention + 2 LayerNorms + MLP
-
-    # MultiheadAttention: qkv projection + output projection
     mha_params = 4 * (d_model * d_model + d_model)  # Q, K, V, O projections
 
     # 2 LayerNorms (gamma + beta for each)

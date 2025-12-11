@@ -24,7 +24,6 @@ def validate(model, diffusion, dataloader, device, recursion_depth=8, max_steps=
             # Predict (denoise)
             all_logits = model(x_t, t, recursion_depth=recursion_depth)
 
-            # Use the final (most refined) step's logits
             logits = all_logits[-1]  # Shape: [B, T, Vocab]
 
             # Calculate Loss (only on masked tokens)
@@ -36,7 +35,7 @@ def validate(model, diffusion, dataloader, device, recursion_depth=8, max_steps=
             total_loss += loss.item()
             steps += 1
 
-    # Avoid division by zero if dataloader is empty
+    # Avoid division by zero
     return total_loss / steps if steps > 0 else 0.0
 
 

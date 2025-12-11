@@ -18,7 +18,6 @@ class TransformerBlock(nn.Module):
         )
 
     def forward(self, x):
-        # PyTorch 2.0+ Flash Attention optimization
         attn_out, _ = self.attn(x, x, x, need_weights=False)
         x = self.ln1(x + attn_out)
         x = self.ln2(x + self.mlp(x))
@@ -73,7 +72,6 @@ class TinyRecursiveTransformer(nn.Module):
         t_emb = self.time_embed(self.timestep_embedding(timestep, self.d_model))
 
         # Create the "Context Signal" (Input + Position + Time)
-        # We will re-inject THIS at every step, not just tokens.
         context_signal = tok_emb + pos_emb + t_emb[:, None, :]
         
         # Initialize Hidden State
@@ -84,12 +82,9 @@ class TinyRecursiveTransformer(nn.Module):
         # --- THE RECURSIVE LOOP ---
         for step in range(recursion_depth):
             
-            # FIX 1: Normalize before processing to prevent explosion
             if step > 0:
                 z = self.ln_recycle(z)
                 
-            # FIX 2: Re-inject the FULL context (Tokens + Position)
-            # This reminds the model "where" the tokens are, fixing the order issue.
             z = z + context_signal 
 
             # Pass through the shared blocks
@@ -111,9 +106,8 @@ class AbsorbingDiffusion:
         self.mask_token_id = mask_token_id
 
     def q_sample(self, x_0, t):
-        """Forward: randomly mask tokens based on timestep"""
         B, T = x_0.shape
-        # t is [B]
+
         mask_prob = t.float() / self.num_timesteps
         
         # Create mask [B, T]
@@ -139,17 +133,12 @@ class AbsorbingDiffusion:
         new_tokens = torch.multinomial(probs.view(-1, probs.size(-1)), 1).view(B, T)
 
         # Unmask logic
-        # In discrete diffusion, we usually unmask everything the model feels confident about
-        # or unmask proportionally. Here is a simple "unmask one step" logic:
         current_ratio = t[0].float() / self.num_timesteps
         next_ratio = (t[0] - 1).float() / self.num_timesteps
         
-        # Probability to KEEP masked
-        # This is a simplification of the true reverse process
         p_keep = next_ratio / current_ratio
         keep_mask = torch.rand(B, T, device=x_t.device) < p_keep
         
-        # Update only things that are currently masked AND failed the "keep" check
         update_locs = is_masked & (~keep_mask)
         
         x_prev = x_t.clone()
